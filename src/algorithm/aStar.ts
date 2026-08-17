@@ -68,60 +68,120 @@ function minimumRemainingBends(
   destination: Point,
   destinationDirection: Direction,
 ): number {
-  // directions 对应论文 dirns(v', d)，描述目标位于当前点哪些象限方向。
-  // 例如目标位于右上方时为 {N,E}，正右方时只有 {E}。
+  // directions 对应论文 dirns(v', d)，描述目标相对当前点位于哪些基本方向。
+  // 画布坐标系中 x 向右、y 向下，因此：
+  // - current=(0,0)，destination=(10,-10)：目标在右上方，结果为 {N,E}；
+  // - current=(0,0)，destination=(10,0)：目标在正右方，结果只有 {E}；
+  // - current=(0,0)，destination=(0,0)：两点重合，结果为空集合 {}。
   const directions = directionsTo(current, destination)
 
-  // 只有目标位于当前行进方向的同一直线上且在前方，才能不转弯直接到达。
+  // destinationIsStraightAhead 表示目标就在当前行进方向的正前方。
+  // directions.size === 1 用来排除斜对角位置；directions.has(currentDirection)
+  // 则要求这个唯一方向与当前行进方向相同。
+  // 例：current=(0,0)、currentDirection=E、destination=(10,0)，结果为 true；
+  //     destination=(10,10) 时 directions={E,S}，目标在右下方，结果为 false；
+  //     destination=(-10,0) 时 directions={W}，目标在身后，结果也为 false。
   const destinationIsStraightAhead =
     directions.size === 1 && directions.has(currentDirection)
 
-  // 判断当前位置是否恰好落在“按目标要求方向进入”的反向延长线上。
-  // 例如目标要求向东进入，目标位于当前位置正东方时为 true。
+  // destinationIsOnEntryRay 表示当前位置和目标已经在同一直线上，
+  // 并且从当前位置走向目标的方向正好等于目标要求的进入方向。
+  // 例：destinationDirection=E 时：
+  // - current=(0,0)、destination=(10,0)：directions={E}，结果为 true，
+  //   因为从当前位置向东走可以按 E 方向进入目标；
+  // - destination=(10,10)：directions={E,S}，不是同一直线，结果为 false；
+  // - destination=(-10,0)：directions={W}，会从 W 方向行进，结果也为 false。
   const destinationIsOnEntryRay =
     directions.size === 1 && directions.has(destinationDirection)
 
-  // 当前方向与目标要求的进入方向相差 90 度，而不是同向或反向。
+  // isPerpendicular 表示当前行进方向与目标要求的进入方向相差 90°。
+  // leftDirection/rightDirection 分别取目标方向的左转和右转方向。
+  // 例：currentDirection=E、destinationDirection=S 时结果为 true；
+  //     currentDirection=E、destinationDirection=E 时是同向，结果为 false；
+  //     currentDirection=E、destinationDirection=W 时是反向，结果也为 false。
   const isPerpendicular =
     leftDirection(destinationDirection) === currentDirection ||
     rightDirection(destinationDirection) === currentDirection
 
-  // current 与 destination 已经是同一个坐标，不再估计位置移动产生的折弯。
+  // 判断 1：current 与 destination 已经是同一个坐标，返回剩余折弯下界 0。
+  // 例：current=(10,20)、destination=(10,20)，directions={}。
+  // 即使 currentDirection 与 destinationDirection 不同，这里仍返回乐观下界 0；
+  // A* 真正结束时还会单独检查目标方向，因此不会错误接受方向不符的状态。
   if (directions.size === 0) return 0
 
-  // 当前方向就是终点要求的进入方向，并且终点正好位于前方射线上。
+  // 判断 2：当前方向等于目标进入方向，并且目标就在正前方，返回 0。
+  // 例：current=(0,0)、currentDirection=E、destination=(10,0)、
+  // destinationDirection=E，可以保持 E 方向直接到达：
+  //   (0,0) --E--> (10,0)
+  // 全程没有改变方向，所以至少还需 0 次折弯。
   if (currentDirection === destinationDirection && destinationIsStraightAhead) {
     return 0
   }
 
-  // 当前方向与目标进入方向垂直，而且先直行再转一次就能对准目标。
+  // 判断 3：当前方向与目标进入方向垂直，并且目标位于当前方向的前方区域，返回 1。
+  // directions.has(currentDirection) 表示先沿当前方向前进不会离目标越来越远。
+  // 例：current=(0,0)、currentDirection=E、destination=(10,10)、
+  // destinationDirection=S，此时 directions={E,S}、isPerpendicular=true：
+  //   (0,0) --E--> (10,0) --S--> (10,10)
+  // 从 E 转到 S 一次即可按 S 方向进入目标，所以至少还需 1 次折弯。
   if (isPerpendicular && directions.has(currentDirection)) return 1
 
+  // 判断 4：下面两个几何条件都至少需要 2 次折弯。
   if (
+    // 条件 4A：当前方向和目标进入方向相同，目标也位于该方向一侧，
+    // 但目标不在正前方直线上，而是在斜对角位置。
+    // 例：current=(0,0)、currentDirection=E、destination=(10,10)、
+    // destinationDirection=E，此时 directions={E,S}：
+    //   入点方向 E --转 S--> (0,10) --转 E--> (10,10)
+    // 必须先偏移到目标所在行，再恢复为 E 进入目标，共 2 次折弯。
     (currentDirection === destinationDirection &&
       directions.has(currentDirection) &&
       !destinationIsStraightAhead) ||
+    // 条件 4B：当前方向与目标进入方向相反，并且当前位置不在目标进入射线上。
+    // 例：current=(0,0)、currentDirection=E、destination=(10,10)、
+    // destinationDirection=W，此时 directions={E,S}，目标不在正 W 射线上：
+    //   (0,0) --E--> (20,0) --S--> (20,10) --W--> (10,10)
+    // 需要先越过目标，再转向目标所在行，最后以 W 方向折返，共 2 次折弯。
     (currentDirection === reverseDirection(destinationDirection) &&
       !destinationIsOnEntryRay)
   ) {
-    // 典型情况是需要组成一个 L/Z 形调整，乐观估计至少再转两次。
+    // 两个条件虽然几何形状不同，但乐观下界都为 2。
     return 2
   }
 
-  // 当前方向与目标方向垂直，但目标不在当前方向的前方，需要额外绕回。
+  // 判断 5：当前方向与目标进入方向垂直，但目标不在当前方向的前方，返回 3。
+  // 例：current=(0,0)、currentDirection=E、destination=(-10,10)、
+  // destinationDirection=S，此时 directions={W,S}，其中不包含当前方向 E：
+  //   入点方向 E --转 S--> (0,5) --转 W--> (-10,5) --转 S--> (-10,10)
+  // 既要修正“目标在当前方向身后”的问题，又要最终恢复成 S，共需 3 次折弯。
   if (isPerpendicular && !directions.has(currentDirection)) return 3
 
+  // 判断 6：下面两个最不利的几何条件都至少需要 4 次折弯。
   if (
+    // 条件 6A：当前方向与目标进入方向相反，而且目标恰好位于进入射线上。
+    // 例：current=(0,0)、currentDirection=E、destination=(-10,0)、
+    // destinationDirection=W。目标就在正西方，但当前正在向东行进，不能直接掉头：
+    //   (0,0) --E--> (10,0) --N--> (10,-10)
+    //         --W--> (-20,-10) --S--> (-20,0) --W--> (-10,0)
+    // 方向依次 E、N、W、S、W，共改变 4 次，并最终以 W 进入目标。
     (currentDirection === reverseDirection(destinationDirection) &&
       destinationIsOnEntryRay) ||
+    // 条件 6B：当前方向等于目标进入方向，但目标完全不在该方向一侧。
+    // 例：current=(0,0)、currentDirection=E、destination=(-10,10)、
+    // destinationDirection=E，此时 directions={W,S}，其中没有 E：
+    //   (0,0) --E--> (10,0) --S--> (10,20)
+    //         --W--> (-20,20) --N--> (-20,10) --E--> (-10,10)
+    // 必须绕到目标西侧后再以 E 进入，方向共改变 4 次。
     (currentDirection === destinationDirection &&
       !directions.has(currentDirection))
   ) {
-    // 当前方向与目标进入条件最不利，必须先绕开、反向，再重新对准目标。
+    // 两个条件都需要先绕开、调整到目标另一侧，再重新对准目标进入方向。
     return 4
   }
 
-  // 未落入论文五类图形时返回更保守的下界，宁可低估也不能高估。
+  // 防御性兜底：对于当前 Direction=N/S/E/W 和所有相对位置，前面的判断已完整覆盖。
+  // 因此正常输入不会到达这里；如果将来扩展了方向类型而遗漏新情况，则返回 0。
+  // 0 是安全的乐观下界：可能降低搜索速度，但不会因高估 H 而破坏 A* 的最优性。
   return 0
 }
 
